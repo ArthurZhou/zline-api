@@ -130,20 +130,22 @@ pub async fn login(req: worker::Request) -> serde_json::Value {
         }
     };
 
-    let cookie = resp
-        .headers()
-        .get("Set-Cookie")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
+    let cookie = match resp.headers().get("Set-Cookie") {
+        Some(cookie) => cookie.to_str().unwrap().to_string(),
+        None => "".to_string(),
+    };
     let text = match resp.text().await {
         Ok(text) => text,
         Err(e) => {
             return json!({ "code": 500, "message": format!("failed to read response text: {}", e) })
         }
     };
-    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let json: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(json) => json,
+        Err(e) => {
+            return json!({ "code": 500, "message": format!("failed to decode response(maybe a remote server issue): {}", e) })
+        }
+    };
 
     if json["succeed"] == "1" {
         json!({ "code": 200, "message": "ok", "data": {
@@ -151,5 +153,52 @@ pub async fn login(req: worker::Request) -> serde_json::Value {
         } })
     } else {
         json!({ "code": 401, "message": json["errorMsg"] })
+    }
+}
+
+pub async fn logout() -> serde_json::Value {
+    let client = Client::new();
+    let _ = match client
+        .get("https://www.jincai.sh.cn/zlinesystem/xlogin/loginout")
+        .headers(default_headers())
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            return json!({ "code": 502, "message": format!("unable to perform request: {}", e) })
+        }
+    };
+    json!({ "code": 200, "message": "ok" })
+}
+
+pub async fn status(req: worker::Request) -> serde_json::Value {
+    let url = Url::try_from(req.url().unwrap()).unwrap();
+    let mut cookie = "".to_string();
+    for (key, val) in url.query_pairs() {
+        match key {
+            std::borrow::Cow::Borrowed("cookie") => cookie = val.to_string(),
+            _ => {}
+        }
+    }
+
+    let client = Client::new();
+    let resp = match client
+        .get("https://www.jincai.sh.cn/zlinesystem/hdesk")
+        .headers(default_headers())
+        .header("Cookie", cookie)
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            return json!({ "code": 502, "message": format!("unable to perform request: {}", e) })
+        }
+    };
+
+    if resp.url().to_string() == "https://www.jincai.sh.cn/zlinesystem/hdesk" {
+        json!({ "code": 200, "message": "ok", "data": { "valid": true } })
+    } else {
+        json!({ "code": 401, "message": "invalid cookie", "data": { "valid": false } })
     }
 }
