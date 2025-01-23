@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::fmt;
 
 use reqwest::header;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use worker::Url;
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct Response {
@@ -53,7 +55,7 @@ pub async fn get_xtoken() -> serde_json::Value {
     {
         Ok(resp) => resp,
         Err(e) => {
-            return json!({ "code": 502, "message": format!("unable to perform request: {}", e.to_string()).to_string() })
+            return json!({ "code": 502, "message": format!("unable to perform request: {}", e) })
         }
     };
     if !resp.status().is_success() {
@@ -93,4 +95,61 @@ pub async fn get_xtoken() -> serde_json::Value {
             "xtoken": xtoken.as_utf8_str().to_string()
         }
     })
+}
+
+pub async fn login(req: worker::Request) -> serde_json::Value {
+    let url = Url::try_from(req.url().unwrap()).unwrap();
+    let mut xtoken = "".to_string();
+    let mut username = "".to_string();
+    let mut password = "".to_string();
+    for (key, val) in url.query_pairs() {
+        match key {
+            std::borrow::Cow::Borrowed("xtoken") => xtoken = val.to_string(),
+            std::borrow::Cow::Borrowed("username") => username = val.to_string(),
+            std::borrow::Cow::Borrowed("password") => password = val.to_string(),
+            _ => {}
+        }
+    }
+
+    let mut params = HashMap::new();
+    params.insert("XToken", xtoken);
+    params.insert("pzlusername", username);
+    params.insert("pzlpassword", password);
+
+    let client = Client::new();
+    let resp = match client
+        .post("https://www.jincai.sh.cn/zlineauthrize/xlogin/sysxlogin")
+        .headers(default_headers())
+        .form(&params)
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            return json!({ "code": 502, "message": format!("unable to perform request: {}", e) })
+        }
+    };
+
+    let cookie = resp
+        .headers()
+        .get("Set-Cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let text = match resp.text().await {
+        Ok(text) => text,
+        Err(e) => {
+            return json!({ "code": 500, "message": format!("failed to read response text: {}", e) })
+        }
+    };
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+    if json["succeed"] == "1" {
+        json!({ "code": 200, "message": "ok", "data": {
+            "cookie": cookie.split(" ").next().unwrap_or("")
+        } })
+    } else {
+        json!({ "code": 401, "message": json["errorMsg"] })
+    }
 }
