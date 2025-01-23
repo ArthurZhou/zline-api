@@ -11,7 +11,7 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 404,
             )
         })
-        .get_async("/security/xtoken", |_, _| async move {
+        .post_async("/security/xtoken", |_, _| async move {
             Response::from_json(&api::get_xtoken().await)
         })
         .run(req, env)
