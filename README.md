@@ -56,7 +56,11 @@ URL: `/security/login`
 - `password`: 加密后的密码
 
 返回数据: 
-- `cookie`: cookie值 `PZLSystemLogin=XXXXXXXX;`
+- `cookie`: cookie值 `PZLSystemLogin=XXXXXXXX;PHPSESSID=XXXX`
+    
+    > `PZLSystemLogin`是侧栏等控件的cookie
+    
+    > `PHPSESSID`是嵌入的iframe的cookie
 ***
 
 ### 退出登录
@@ -66,6 +70,8 @@ URL: `/security/logout`
 ***
 
 ### 检验登录状态
+**目前该功能不检查嵌入PHP页面的cookie**
+
 URL: `/security/status`
 
 传入参数: 
@@ -73,3 +79,16 @@ URL: `/security/status`
 
 返回数据: 
 - `valid`: bool true/false
+***
+
+### 获取考试场次和科目
+
+URL: `/data/exam_list`
+
+传入参数: 
+- `cookie`
+
+返回数据: 
+- `subject`: 科目的`"<名称>": "<对应代码>"`
+- `time`: 场次的`"<名称>": "<对应代码>"`
+***

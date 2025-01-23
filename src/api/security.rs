@@ -1,48 +1,8 @@
-use std::collections::HashMap;
-use std::fmt;
-
-use reqwest::header;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use reqwest::{Client, Error};
 use serde_json::json;
-use worker::Url;
+use std::collections::HashMap;
 
-#[derive(Deserialize, Serialize, Debug)]
-pub struct Response {
-    pub code: u16,
-    message: String,
-    data: String,
-}
-
-impl Default for Response {
-    fn default() -> Self {
-        Response {
-            code: 200,
-            message: "ok".to_string(),
-            data: "".to_string(),
-        }
-    }
-}
-
-impl fmt::Display for Response {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{{\"code\":\"{}\",\"message\":\"{}\",\"data\":\"{}\"}}",
-            self.code, self.message, self.data
-        )
-    }
-}
-
-fn default_headers() -> header::HeaderMap {
-    let mut headers = header::HeaderMap::new();
-    headers.insert("User-Agent", header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"));
-    headers.insert(
-        "Content-Type",
-        header::HeaderValue::from_static("application/x-www-form-urlencoded"),
-    );
-    headers
-}
+use crate::api::{default_headers, get_params, get_tag_attribute};
 
 pub async fn get_xtoken() -> serde_json::Value {
     let client = Client::new();
@@ -66,61 +26,45 @@ pub async fn get_xtoken() -> serde_json::Value {
         Ok(text) => text,
         Err(_) => return json!({ "code": 500, "message": "failed to parse response".to_string() }),
     };
-
-    let mut dom = tl::parse(&text, tl::ParserOptions::default()).unwrap();
-    let anchor = dom
-        .query_selector("#XToken[value]")
-        .expect("Failed to parse query selector")
-        .next()
-        .expect("Failed to find anchor tag");
-    let parser_mut = dom.parser_mut();
-
-    let anchor = anchor
-        .get_mut(parser_mut)
-        .expect("Failed to resolve node")
-        .as_tag_mut()
-        .expect("Failed to cast Node to HTMLTag");
-
-    let attributes = anchor.attributes_mut();
-
-    let xtoken = attributes
-        .get_mut("value")
-        .flatten()
-        .expect("Attribute not found or malformed");
+    let xtoken = get_tag_attribute(&text, "#XToken[value]", "value");
 
     json!({
         "code": 200,
         "message": "ok",
         "data": {
-            "xtoken": xtoken.as_utf8_str().to_string()
+            "xtoken": xtoken
         }
     })
 }
 
 pub async fn login(req: worker::Request) -> serde_json::Value {
-    let url = Url::try_from(req.url().unwrap()).unwrap();
-    let mut xtoken = "".to_string();
-    let mut username = "".to_string();
-    let mut password = "".to_string();
-    for (key, val) in url.query_pairs() {
-        match key {
-            std::borrow::Cow::Borrowed("xtoken") => xtoken = val.to_string(),
-            std::borrow::Cow::Borrowed("username") => username = val.to_string(),
-            std::borrow::Cow::Borrowed("password") => password = val.to_string(),
-            _ => {}
-        }
-    }
+    let params: HashMap<String, String> = get_params(req.url().unwrap());
 
-    let mut params = HashMap::new();
-    params.insert("XToken", xtoken);
-    params.insert("pzlusername", username);
-    params.insert("pzlpassword", password);
+    let mut form = HashMap::new();
+    form.insert(
+        "XToken",
+        params
+            .get("xtoken")
+            .map_or("".to_string(), |v| v.to_string()),
+    );
+    form.insert(
+        "pzlusername",
+        params
+            .get("username")
+            .map_or("".to_string(), |v| v.to_string()),
+    );
+    form.insert(
+        "pzlpassword",
+        params
+            .get("password")
+            .map_or("".to_string(), |v| v.to_string()),
+    );
 
     let client = Client::new();
     let resp = match client
         .post("https://www.jincai.sh.cn/zlineauthrize/xlogin/sysxlogin")
         .headers(default_headers())
-        .form(&params)
+        .form(&form)
         .send()
         .await
     {
@@ -148,12 +92,69 @@ pub async fn login(req: worker::Request) -> serde_json::Value {
     };
 
     if json["succeed"] == "1" {
+        let php_cookie = match data_login(&cookie).await {
+                    Ok(t) => t.clone().split(" ").next().unwrap_or("").to_string(),
+                    Err(e) => {
+                    return json!({ "code": 500, "message": format!("failed to decode response(maybe a remote server issue): {}", e) })
+                }};
         json!({ "code": 200, "message": "ok", "data": {
-            "cookie": cookie.split(" ").next().unwrap_or("")
+            "cookie": cookie.split(" ").next().unwrap_or("").to_string() + &php_cookie
         } })
     } else {
         json!({ "code": 401, "message": json["errorMsg"] })
     }
+}
+
+async fn data_login(cookie: &str) -> Result<String, Error> {
+    let client = Client::new();
+    let resp = match client
+        .get("https://www.jincai.sh.cn/zlinesystem/xsso/gotox/JCAPW1002?pzlsid=pz6CE59B351CA97621C593D89ADBDB57E8&ticket=pz6CE59B351CA97621C593D89ADBDB57E8")
+        .headers(default_headers())
+        .header("Cookie", cookie)
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => return Err(e)
+    };
+
+    let text: String = match resp.text().await {
+        Ok(text) => text,
+        Err(e) => return Err(e)
+    };
+    let xuid = get_tag_attribute(&text, "input[name=\"xuid\"]", "value");
+    let xuxm = get_tag_attribute(&text, "input[name=\"xuxm\"]", "value");
+    let xright = get_tag_attribute(&text, "input[name=\"xright\"]", "value");
+    let xtimestamp = get_tag_attribute(&text, "input[name=\"xtimestamp\"]", "value");
+    let rebackpage = get_tag_attribute(&text, "input[name=\"rebackpage\"]", "value");
+    let signstr = get_tag_attribute(&text, "input[name=\"signstr\"]", "value");
+
+    let mut form = HashMap::new();
+    form.insert("xuid", xuid);
+    form.insert("xuxm", xuxm);
+    form.insert("xright", xright);
+    form.insert("xtimestamp", xtimestamp);
+    form.insert("rebackpage", rebackpage);
+    form.insert("signstr", signstr);
+
+    let client = Client::new();
+    let resp = match client
+        .post("https://www.jincai.sh.cn/cjcx/student/ajax/login0.php")
+        .headers(default_headers())
+        .header("Cookie", cookie)
+        .form(&form)
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => return Err(e)
+    };
+
+    let new_cookie = match resp.headers().get("Set-Cookie") {
+        Some(cookie) => cookie.to_str().unwrap().to_string(),
+        None => "".to_string(),
+    };
+    Ok(new_cookie)
 }
 
 pub async fn logout() -> serde_json::Value {
@@ -173,20 +174,13 @@ pub async fn logout() -> serde_json::Value {
 }
 
 pub async fn status(req: worker::Request) -> serde_json::Value {
-    let url = Url::try_from(req.url().unwrap()).unwrap();
-    let mut cookie = "".to_string();
-    for (key, val) in url.query_pairs() {
-        match key {
-            std::borrow::Cow::Borrowed("cookie") => cookie = val.to_string(),
-            _ => {}
-        }
-    }
+    let params = get_params(req.url().unwrap());
 
     let client = Client::new();
     let resp = match client
         .get("https://www.jincai.sh.cn/zlinesystem/hdesk")
         .headers(default_headers())
-        .header("Cookie", cookie)
+        .header("Cookie", params.get("cookie").map_or("", |v| v))
         .send()
         .await
     {
